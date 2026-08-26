@@ -5,8 +5,9 @@ import os
 import re
 from typing import Any
 
-os.environ.setdefault("USE_TF", "0")
-os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ["USE_TF"] = "0"
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["USE_TORCH"] = "1"
 
 import numpy as np
 from flask import Flask, jsonify, render_template, request
@@ -114,8 +115,12 @@ def upload():
     if not chunks:
         return jsonify(error="No selectable text was found. Try a text-based PDF."), 422
 
-    model = get_embedding_model()
-    embeddings = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
+    try:
+        model = get_embedding_model()
+        embeddings = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
+    except Exception as error:
+        app.logger.exception("Embedding model failed while indexing the document")
+        return jsonify(error=f"The PDF was read, but the embedding model is unavailable: {error}"), 503
     _document = {
         "name": uploaded.filename,
         "pages": page_count,
@@ -141,12 +146,20 @@ def ask():
     if not question:
         return jsonify(error="Enter a question first."), 400
 
-    sources = retrieve(question)
-    qa_model = get_qa_pipeline()
-    candidates = [
-        {**source, **qa_model(question=question, context=source["text"])}
-        for source in sources
-    ]
+    try:
+        sources = retrieve(question)
+        qa_model = get_qa_pipeline()
+    except Exception as error:
+        app.logger.exception("Question-answering model failed")
+        return jsonify(error=f"The question-answering model is unavailable: {error}"), 503
+    try:
+        candidates = [
+            {**source, **qa_model(question=question, context=source["text"])}
+            for source in sources
+        ]
+    except Exception as error:
+        app.logger.exception("Question-answering inference failed")
+        return jsonify(error=f"The question could not be processed: {error}"), 503
     result = max(candidates, key=lambda candidate: candidate.get("score", 0), default={})
     answer = result.get("answer", "").strip()
     model_confidence = float(result.get("score", 0))
@@ -165,6 +178,13 @@ def ask():
 @app.errorhandler(413)
 def file_too_large(_error):
     return jsonify(error="That file is too large. The limit is 16 MB."), 413
+
+
+@app.errorhandler(500)
+def internal_error(_error):
+    if request.path.startswith("/api/"):
+        return jsonify(error="The server could not complete that request. Check the application logs."), 500
+    return "Internal Server Error", 500
 
 
 if __name__ == "__main__":
