@@ -17,17 +17,7 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 _document: dict[str, Any] | None = None
-_embedding_model = None
 _qa_pipeline = None
-
-
-def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        from sentence_transformers import SentenceTransformer
-
-        _embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-    return _embedding_model
 
 
 def get_qa_pipeline():
@@ -77,15 +67,12 @@ def expand_answer(answer: str, context: str) -> str:
 def retrieve(question: str, limit: int = 3) -> list[dict[str, Any]]:
     if not _document:
         return []
-    model = get_embedding_model()
-    query_vector = model.encode([question], normalize_embeddings=True)[0]
-    semantic_scores = np.asarray(_document["embeddings"]) @ query_vector
     question_words = set(question.lower().split())
     lexical_scores = np.array([
         len(question_words.intersection(chunk.lower().split())) / max(1, len(question_words))
         for chunk in _document["chunks"]
     ])
-    scores = (semantic_scores * 0.75) + (lexical_scores * 0.25)
+    scores = lexical_scores
     ranked = np.argsort(scores)[::-1][:limit]
     return [
         {"text": _document["chunks"][int(index)], "score": round(float(scores[index]), 3), "rank": position + 1}
@@ -115,12 +102,7 @@ def upload():
     if not chunks:
         return jsonify(error="No selectable text was found. Try a text-based PDF."), 422
 
-    try:
-        model = get_embedding_model()
-        embeddings = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
-    except Exception as error:
-        app.logger.exception("Embedding model failed while indexing the document")
-        return jsonify(error=f"The PDF was read, but the embedding model is unavailable: {error}"), 503
+    embeddings = np.zeros((len(chunks), 1), dtype=np.float32)
     _document = {
         "name": uploaded.filename,
         "pages": page_count,
