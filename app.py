@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import io
+import os
+import re
+from typing import Any
+
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+
+import numpy as np
+from flask import Flask, jsonify, render_template, request
+from pypdf import PdfReader
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+_document: dict[str, Any] | None = None
+_embedding_model = None
+_qa_pipeline = None
+
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+
+        _embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return _embedding_model
+
+
+def get_qa_pipeline():
+    global _qa_pipeline
+    if _qa_pipeline is None:
+        from transformers import pipeline
+
+        _qa_pipeline = pipeline(
+            "question-answering",
+            model="distilbert-base-cased-distilled-squad",
+        )
+    return _qa_pipeline
+
+
+def split_into_chunks(text: str, sentences_per_chunk: int = 4) -> list[str]:
+    sentences = [sentence.strip() for sentence in text.replace("\n", " ").split(".") if sentence.strip()]
+    if not sentences:
+        return []
+    return [
+        ". ".join(sentences[start : start + sentences_per_chunk]).strip() + "."
+        for start in range(0, len(sentences), sentences_per_chunk)
+    ]
+
+
+def extract_pdf(file_bytes: bytes) -> tuple[str, int]:
+    reader = PdfReader(io.BytesIO(file_bytes))
+    pages = []
+    for page in reader.pages:
+        pages.append(page.extract_text() or "")
+    return "\n".join(pages).strip(), len(reader.pages)
+
+
+def expand_answer(answer: str, context: str) -> str:
+    """Return a complete, concise source sentence when QA returns a fragment."""
+    if len(answer.split()) >= 8:
+        return answer
+    sentences = [sentence.strip() for sentence in context.split(".") if sentence.strip()]
+    answer_words = set(re.findall(r"\w+", answer.lower()))
+    for sentence in sentences:
+        sentence_words = set(re.findall(r"\w+", sentence.lower()))
+        if answer_words and answer_words.issubset(sentence_words):
+            expanded = sentence.rstrip() + "."
+            return expanded if len(expanded) <= 240 else answer
+    return answer
+
+
+def retrieve(question: str, limit: int = 3) -> list[dict[str, Any]]:
+    if not _document:
+        return []
+    model = get_embedding_model()
+    query_vector = model.encode([question], normalize_embeddings=True)[0]
+    semantic_scores = np.asarray(_document["embeddings"]) @ query_vector
+    question_words = set(question.lower().split())
+    lexical_scores = np.array([
+        len(question_words.intersection(chunk.lower().split())) / max(1, len(question_words))
+        for chunk in _document["chunks"]
+    ])
+    scores = (semantic_scores * 0.75) + (lexical_scores * 0.25)
+    ranked = np.argsort(scores)[::-1][:limit]
+    return [
+        {"text": _document["chunks"][int(index)], "score": round(float(scores[index]), 3), "rank": position + 1}
+        for position, index in enumerate(ranked)
+    ]
+
+
+@app.get("/")
+def index():
+    return render_template("index.html", document=_document)
+
+
+@app.post("/api/upload")
+def upload():
+    global _document
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        return jsonify(error="Choose a PDF file first."), 400
+    if not uploaded.filename.lower().endswith(".pdf"):
+        return jsonify(error="Only PDF files are supported."), 400
+
+    try:
+        text, page_count = extract_pdf(uploaded.read())
+    except Exception as error:
+        return jsonify(error=f"Could not read that PDF: {error}"), 400
+    chunks = split_into_chunks(text)
+    if not chunks:
+        return jsonify(error="No selectable text was found. Try a text-based PDF."), 422
+
+    model = get_embedding_model()
+    embeddings = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
+    _document = {
+        "name": uploaded.filename,
+        "pages": page_count,
+        "characters": len(text),
+        "chunks": chunks,
+        "embeddings": embeddings,
+    }
+    return jsonify(
+        name=uploaded.filename,
+        pages=page_count,
+        chunks=len(chunks),
+        characters=len(text),
+        message="Document indexed and ready for questions.",
+    )
+
+
+@app.post("/api/ask")
+def ask():
+    if not _document:
+        return jsonify(error="Upload a PDF before asking a question."), 400
+    payload = request.get_json(silent=True) or {}
+    question = str(payload.get("question", "")).strip()
+    if not question:
+        return jsonify(error="Enter a question first."), 400
+
+    sources = retrieve(question)
+    qa_model = get_qa_pipeline()
+    candidates = [
+        {**source, **qa_model(question=question, context=source["text"])}
+        for source in sources
+    ]
+    result = max(candidates, key=lambda candidate: candidate.get("score", 0), default={})
+    answer = result.get("answer", "").strip()
+    model_confidence = float(result.get("score", 0))
+    if not answer or model_confidence < 0.15:
+        answer = "I could not find a reliable answer in this document."
+        model_confidence = 0
+    else:
+        answer = expand_answer(answer, result.get("text", ""))
+    return jsonify(
+        answer=answer,
+        confidence=round(model_confidence, 3),
+        sources=sources,
+    )
+
+
+@app.errorhandler(413)
+def file_too_large(_error):
+    return jsonify(error="That file is too large. The limit is 16 MB."), 413
+
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "5000")),
+        debug=os.getenv("FLASK_DEBUG", "0") == "1",
+    )

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Papertrail | Ask your PDF</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Papertrail home"><span class="brand-mark">P</span><span>papertrail</span></a>
+      <span class="top-note">PRIVATE DOCUMENT INTELLIGENCE</span>
+    </header>
+
+    <section class="intro">
+      <div>
+        <p class="eyebrow">READ LESS. UNDERSTAND MORE.</p>
+        <h1>Your document,<br><em>in conversation.</em></h1>
+      </div>
+      <p class="intro-copy">Drop in a PDF and ask precise questions. Papertrail finds the relevant passages and answers from the source itself.</p>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel upload-panel">
+        <div class="panel-heading"><span class="section-number">01</span><h2>Bring a document</h2></div>
+        <form id="upload-form">
+          <label class="dropzone" id="dropzone" for="file-input">
+            <span class="upload-icon">↑</span>
+            <strong id="file-label">Drop your PDF here</strong>
+            <span>or click to browse · max 16 MB</span>
+            <input id="file-input" type="file" accept="application/pdf,.pdf" hidden>
+          </label>
+          <button class="button primary" id="upload-button" type="submit"><span>Index document</span><span>↗</span></button>
+        </form>
+        <div class="status" id="upload-status" aria-live="polite"></div>
+        <div class="document-card" id="document-card" {% if not document %}hidden{% endif %}>
+          <div class="pdf-badge">PDF</div><div><strong id="doc-name">{% if document %}{{ document.name }}{% endif %}</strong><span id="doc-meta">{% if document %}Indexed document{% endif %}</span></div><span class="ready-dot"></span>
+        </div>
+        <div class="model-note"><span class="spark">✦</span><span>Powered by pretrained retrieval and question-answering models. Nothing is trained in this app.</span></div>
+      </aside>
+
+      <section class="panel qa-panel">
+        <div class="panel-heading"><span class="section-number">02</span><h2>Ask anything</h2><span class="ready-label" id="ready-label">WAITING FOR PDF</span></div>
+        <form id="question-form" class="question-form">
+          <textarea id="question-input" rows="3" placeholder="What would you like to know?" {% if not document %}disabled{% endif %}></textarea>
+          <div class="question-footer"><span class="hint">Answers are grounded in your uploaded text</span><button class="button ask-button" id="ask-button" type="submit" {% if not document %}disabled{% endif %}>Ask question <span>↗</span></button></div>
+        </form>
+        <div class="answer-area" id="answer-area">
+          <div class="empty-state"><span class="empty-line"></span><p>Your answer will appear here</p><span class="empty-line"></span></div>
+        </div>
+      </section>
+    </section>
+
+    <footer><span>RAG WORKSPACE / 2026</span><span>LOCAL SESSION · <b>READY</b></span></footer>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
