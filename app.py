@@ -49,30 +49,22 @@ def expand_answer(answer: str, context: str) -> str:
     return answer
 
 
-def answer_from_text(question: str, sources: list[dict[str, Any]]) -> tuple[str, float]:
-    question_words = set(re.findall(r"\w+", question.lower()))
-    candidates = []
-    for source in sources:
-        for sentence in re.split(r"(?<=[.!?])\s+", source["text"]):
-            sentence_words = set(re.findall(r"\w+", sentence.lower()))
-            overlap = len(question_words.intersection(sentence_words))
-            if overlap:
-                candidates.append((overlap / max(1, len(question_words)), sentence.strip()))
-    if not candidates:
-        return "I could not find a reliable answer in this document.", 0
-    confidence, answer = max(candidates, key=lambda candidate: candidate[0])
-    return answer, confidence
+def sentence_candidates(text: str) -> list[str]:
+    return [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
 
 
 def retrieve(question: str, limit: int = 3) -> list[dict[str, Any]]:
     if not _document:
         return []
-    question_words = set(question.lower().split())
+    model = get_embedding_model()
+    query_vector = model.encode([question], normalize_embeddings=True)[0]
+    semantic_scores = np.asarray(_document["embeddings"]) @ query_vector
+    question_words = set(re.findall(r"\w+", question.lower()))
     lexical_scores = np.array([
-        len(question_words.intersection(chunk.lower().split())) / max(1, len(question_words))
+        len(question_words.intersection(set(re.findall(r"\w+", chunk.lower())))) / max(1, len(question_words))
         for chunk in _document["chunks"]
     ])
-    scores = lexical_scores
+    scores = (semantic_scores * 0.75) + (lexical_scores * 0.25)
     ranked = np.argsort(scores)[::-1][:limit]
     return [
         {"text": _document["chunks"][int(index)], "score": round(float(scores[index]), 3), "rank": position + 1}
@@ -102,7 +94,8 @@ def upload():
     if not chunks:
         return jsonify(error="No selectable text was found. Try a text-based PDF."), 422
 
-    embeddings = np.zeros((len(chunks), 1), dtype=np.float32)
+    model = get_embedding_model()
+    embeddings = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
     _document = {
         "name": uploaded.filename,
         "pages": page_count,
@@ -129,7 +122,23 @@ def ask():
         return jsonify(error="Enter a question first."), 400
 
     sources = retrieve(question)
-    answer, model_confidence = answer_from_text(question, sources)
+    qa_model = get_qa_pipeline()
+    candidates = []
+    question_words = set(re.findall(r"\w+", question.lower()))
+    for source in sources:
+        for sentence in sentence_candidates(source["text"]):
+            result = qa_model(question=question, context=sentence)
+            sentence_words = set(re.findall(r"\w+", sentence.lower()))
+            overlap = len(question_words.intersection(sentence_words))
+            candidates.append({**result, "text": sentence, "rank_score": float(result.get("score", 0)) + (0.02 * overlap)})
+    result = max(candidates, key=lambda candidate: candidate["rank_score"], default={})
+    answer = result.get("answer", "").strip()
+    model_confidence = float(result.get("score", 0))
+    if not answer or model_confidence < 0.15:
+        answer = "I could not find a reliable answer in this document."
+        model_confidence = 0
+    else:
+        answer = expand_answer(answer, result.get("text", ""))
     return jsonify(
         answer=answer,
         confidence=round(model_confidence, 3),
