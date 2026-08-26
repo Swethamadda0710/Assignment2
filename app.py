@@ -17,6 +17,18 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 _document: dict[str, Any] | None = None
+STOP_WORDS = {
+    "a", "an", "and", "are", "be", "does", "for", "how", "in", "is", "it",
+    "of", "on", "or", "the", "this", "to", "what", "when", "where", "which",
+    "who", "why", "with",
+}
+
+
+def meaningful_words(text: str) -> set[str]:
+    return {
+        word for word in re.findall(r"\w+", text.lower())
+        if word not in STOP_WORDS
+    }
 
 
 def split_into_chunks(text: str, sentences_per_chunk: int = 4) -> list[str]:
@@ -56,11 +68,11 @@ def sentence_candidates(text: str) -> list[str]:
 
 
 def answer_from_text(question: str, sources: list[dict[str, Any]]) -> tuple[str, float]:
-    question_words = set(re.findall(r"\w+", question.lower()))
+    question_words = meaningful_words(question)
     candidates = []
     for source in sources:
         for sentence in sentence_candidates(source["text"]):
-            sentence_words = set(re.findall(r"\w+", sentence.lower()))
+            sentence_words = meaningful_words(sentence)
             overlap = len(question_words.intersection(sentence_words))
             if overlap:
                 candidates.append((overlap / max(1, len(question_words)), sentence))
@@ -73,9 +85,9 @@ def answer_from_text(question: str, sources: list[dict[str, Any]]) -> tuple[str,
 def retrieve(question: str, limit: int = 3) -> list[dict[str, Any]]:
     if not _document:
         return []
-    question_words = set(re.findall(r"\w+", question.lower()))
+    question_words = meaningful_words(question)
     lexical_scores = np.array([
-        len(question_words.intersection(set(re.findall(r"\w+", chunk.lower())))) / max(1, len(question_words))
+        len(question_words.intersection(meaningful_words(chunk))) / max(1, len(question_words))
         for chunk in _document["chunks"]
     ])
     scores = lexical_scores
