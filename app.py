@@ -17,21 +17,6 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 _document: dict[str, Any] | None = None
-_qa_pipeline = None
-
-
-def get_qa_pipeline():
-    global _qa_pipeline
-    if _qa_pipeline is None:
-        from transformers import pipeline
-
-        _qa_pipeline = pipeline(
-            "question-answering",
-            model="distilbert-base-cased-distilled-squad",
-        )
-    return _qa_pipeline
-
-
 def split_into_chunks(text: str, sentences_per_chunk: int = 4) -> list[str]:
     sentences = [sentence.strip() for sentence in text.replace("\n", " ").split(".") if sentence.strip()]
     if not sentences:
@@ -62,6 +47,21 @@ def expand_answer(answer: str, context: str) -> str:
             expanded = sentence.rstrip() + "."
             return expanded if len(expanded) <= 240 else answer
     return answer
+
+
+def answer_from_text(question: str, sources: list[dict[str, Any]]) -> tuple[str, float]:
+    question_words = set(re.findall(r"\w+", question.lower()))
+    candidates = []
+    for source in sources:
+        for sentence in re.split(r"(?<=[.!?])\s+", source["text"]):
+            sentence_words = set(re.findall(r"\w+", sentence.lower()))
+            overlap = len(question_words.intersection(sentence_words))
+            if overlap:
+                candidates.append((overlap / max(1, len(question_words)), sentence.strip()))
+    if not candidates:
+        return "I could not find a reliable answer in this document.", 0
+    confidence, answer = max(candidates, key=lambda candidate: candidate[0])
+    return answer, confidence
 
 
 def retrieve(question: str, limit: int = 3) -> list[dict[str, Any]]:
@@ -128,28 +128,8 @@ def ask():
     if not question:
         return jsonify(error="Enter a question first."), 400
 
-    try:
-        sources = retrieve(question)
-        qa_model = get_qa_pipeline()
-    except Exception as error:
-        app.logger.exception("Question-answering model failed")
-        return jsonify(error=f"The question-answering model is unavailable: {error}"), 503
-    try:
-        candidates = [
-            {**source, **qa_model(question=question, context=source["text"])}
-            for source in sources
-        ]
-    except Exception as error:
-        app.logger.exception("Question-answering inference failed")
-        return jsonify(error=f"The question could not be processed: {error}"), 503
-    result = max(candidates, key=lambda candidate: candidate.get("score", 0), default={})
-    answer = result.get("answer", "").strip()
-    model_confidence = float(result.get("score", 0))
-    if not answer or model_confidence < 0.15:
-        answer = "I could not find a reliable answer in this document."
-        model_confidence = 0
-    else:
-        answer = expand_answer(answer, result.get("text", ""))
+    sources = retrieve(question)
+    answer, model_confidence = answer_from_text(question, sources)
     return jsonify(
         answer=answer,
         confidence=round(model_confidence, 3),

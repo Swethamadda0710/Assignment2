@@ -11,6 +11,6 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Open http://127.0.0.1:5000. On the first question, Hugging Face downloads the pretrained `distilbert-base-cased-distilled-squad` question-answering model. Retrieval uses lightweight word matching, and the app does not train any model.
+Open http://127.0.0.1:5000. Retrieval and answers use lightweight word matching over the uploaded text, and the app does not download or train any model.
 
 The current document is held in memory for the running Flask process. Uploading another PDF replaces it.
